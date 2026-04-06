@@ -90,6 +90,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 .prog .pup{color:var(--green);font-weight:bold}
 .prog .pno{color:var(--muted);font-style:italic}
 .prog .phold{color:var(--muted2)}
+.prog .pdown{color:var(--red);font-weight:bold}
+.prog .pwarn{color:#ffaa00;font-weight:bold}
 
 .divr{height:1px;background:var(--border);margin:12px 0}
 .sess-actions{display:flex;gap:7px;flex-wrap:wrap;padding-top:12px;border-top:1px solid var(--border);margin-top:12px}
@@ -253,16 +255,17 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 <div class="overlay" id="m-settings">
   <div class="modal">
     <h2>Settings</h2>
-    <label>Progression Rule</label>
-    <select id="s-rule">
-      <option value="dp">Double Progression (hit rep target then add weight)</option>
-      <option value="lin">Linear (add weight every session)</option>
-      <option value="vol">Volume (beat last session's total volume)</option>
-    </select>
-    <label>Rep Target</label>
-    <input type="number" id="s-reps" min="1" max="50"/>
-    <label>Weight Increment (lbs)</label>
-    <input type="number" id="s-inc" min="0.5" max="100" step="0.5"/>
+    <div style="background:var(--surface);border-left:3px solid var(--accent);padding:8px 11px;font-size:.72rem;color:var(--muted2);line-height:1.6;margin-bottom:14px">
+      Algorithm: <strong style="color:var(--text)">6-8 Rep Double Progression</strong><br>
+      Hit 8 reps on all sets &rarr; add weight. Stay at weight until all sets reach 8.
+      Upper body adds less weight per jump than lower body.
+    </div>
+    <label>Upper Body Increment (lbs) &mdash; e.g. Bench, OHP, Row</label>
+    <input type="number" id="s-inc" min="1" max="50" step="1"/>
+    <label>Lower Body Increment (lbs) &mdash; e.g. Squat, Deadlift, Leg Press</label>
+    <input type="number" id="s-inc2" min="2.5" max="100" step="2.5"/>
+    <label>Target Sets per Exercise</label>
+    <input type="number" id="s-sets" min="1" max="10" step="1"/>
     <div class="mactions">
       <button class="btn-o" onclick="closeOverlay('m-settings')">Cancel</button>
       <button class="btn-o" style="border-color:var(--accent);color:var(--accent)" onclick="saveSettings()">Save</button>
@@ -273,7 +276,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 <script>
 // ── STATE ──────────────────────────────────────────────────────────────────
 var DB_KEY = 'ironlog4';
-var db = { cfg:{rule:'dp',reps:12,inc:5}, routines:[], sessions:[] };
+// cfg: inc = upper body increment, inc2 = lower body increment, sets = target sets
+var db = { cfg:{inc:5,inc2:10,sets:3}, routines:[], sessions:[] };
 
 function dbLoad(){
   try{ var s=localStorage.getItem(DB_KEY); if(s) db=JSON.parse(s); }catch(e){}
@@ -476,40 +480,128 @@ function toggleCard(id){
   var c=document.getElementById('sc-'+id); if(c) c.classList.toggle('on');
 }
 
-// ── PROGRESSION ────────────────────────────────────────────────────────────
+// ── PROGRESSION (Hypertrophy — 6-8 rep double progression) ─────────────────
+//
+// Science basis:
+//   - 6-8 rep range sits at the strength/hypertrophy crossover — heavy enough
+//     to drive mechanical tension (the primary driver of muscle growth) while
+//     accumulating meaningful volume. (Schoenfeld 2010, 2017)
+//   - Double progression: lock weight, build reps to top of range, THEN add
+//     weight and reset to bottom. This is safer than linear add-every-session
+//     and produces better long-term gains. (Israetel, Helms)
+//   - 3 working sets is the minimum effective dose for hypertrophy per exercise.
+//   - Stall = same weight, not progressing reps for 3+ sessions → deload or
+//     technique check before adding load. (Mike Israetel — RP Strength)
+//   - Below 6 reps at target weight = too heavy, risk outweighs stimulus.
+//   - Upper body increments: 5 lbs. Lower body: 10 lbs (larger muscle groups).
+
+function isLowerBody(exId){
+  // Detect lower body exercises by name from the routine
+  var name='';
+  db.routines.forEach(function(r){
+    r.exercises.forEach(function(e){ if(e.id===exId) name=e.name.toLowerCase(); });
+  });
+  return /squat|deadlift|leg press|leg curl|leg ext|lunge|hip thrust|glute|calf|rdl/.test(name);
+}
+
 function calcProg(routineId,exId){
   var cfg=db.cfg;
+  var inc=isLowerBody(exId)?cfg.inc2:cfg.inc;
+
+  // All sessions for this routine+exercise, newest first
   var past=db.sessions.filter(function(s){
     return s.routineId===routineId && s.sets[exId] && s.sets[exId].length>0;
   }).sort(function(a,b){ return b.date.localeCompare(a.date); });
 
   if(!past.length) return {t:'none'};
 
-  var sets=past[0].sets[exId];
-  var maxW=sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
+  var lastSets=past[0].sets[exId];
+  var lastW=lastSets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
+  var nextW=lastW+inc;
 
-  if(cfg.rule==='dp'){
-    var allHit=sets.every(function(s){ return (s.r||0)>=cfg.reps; });
-    if(allHit) return {t:'up',msg:'All sets hit '+cfg.reps+'+ reps \u2192 Add '+cfg.inc+' lbs next session'};
-    var avg=(sets.reduce(function(a,s){ return a+(s.r||0); },0)/sets.length).toFixed(1);
-    return {t:'hold',msg:'Avg reps: '+avg+'/'+cfg.reps+' \u2192 Keep hitting '+cfg.reps+' reps before adding weight'};
+  // Per-set rep analysis
+  var minReps=Infinity, maxReps=0, totalReps=0;
+  lastSets.forEach(function(s){
+    var r=s.r||0;
+    if(r<minReps) minReps=r;
+    if(r>maxReps) maxReps=r;
+    totalReps+=r;
+  });
+  var avgReps=lastSets.length?(totalReps/lastSets.length):0;
+
+  // Count sets in each zone
+  var setsAbove8=lastSets.filter(function(s){ return (s.r||0)>=8; }).length;
+  var setsInRange=lastSets.filter(function(s){ var r=s.r||0; return r>=6&&r<=7; }).length;
+  var setsBelow6=lastSets.filter(function(s){ return (s.r||0)>0&&(s.r||0)<6; }).length;
+  var n=lastSets.length;
+
+  // Stall detection: check last 3 sessions at same weight, no rep progression
+  var stalled=false;
+  if(past.length>=3){
+    var w0=past[0].sets[exId].reduce(function(a,s){ return Math.max(a,s.w||0); },0);
+    var w1=past[1].sets[exId].reduce(function(a,s){ return Math.max(a,s.w||0); },0);
+    var w2=past[2].sets[exId].reduce(function(a,s){ return Math.max(a,s.w||0); },0);
+    var r0=past[0].sets[exId].reduce(function(a,s){ return a+(s.r||0); },0);
+    var r1=past[1].sets[exId].reduce(function(a,s){ return a+(s.r||0); },0);
+    var r2=past[2].sets[exId].reduce(function(a,s){ return a+(s.r||0); },0);
+    stalled=(w0===w1&&w1===w2)&&(r0<=r1||r0<=r2);
   }
-  if(cfg.rule==='lin') return {t:'up',msg:'Linear \u2192 Add '+cfg.inc+' lbs next session'};
-  if(cfg.rule==='vol'){
-    if(past.length<2) return {t:'none'};
-    var vol1=sets.reduce(function(a,s){ return a+(s.w||0)*(s.r||0); },0);
-    var vol2=past[1].sets[exId].reduce(function(a,s){ return a+(s.w||0)*(s.r||0); },0);
-    if(vol1>=vol2) return {t:'up',msg:'Volume beat last session \u2192 Add '+cfg.inc+' lbs next session'};
-    return {t:'hold',msg:'Volume '+vol1+' vs '+vol2+' lbs \u2192 Match last session first'};
+
+  // ── DECISION TREE ──────────────────────────────────────────────────────
+  // 1. Any set below 6 = weight is too heavy
+  if(setsBelow6>0){
+    var dropW=Math.round(lastW*0.90/2.5)*2.5; // drop ~10%, round to nearest 2.5
+    return {t:'down',
+      msg:'Weight too heavy \u2014 '+setsBelow6+' set'+(setsBelow6>1?'s':'')+' fell below 6 reps.'
+        +' Drop to ~'+dropW+' lbs and build back up within the 6\u20138 range.',
+      target:dropW};
   }
-  return {t:'none'};
+
+  // 2. All sets hit 8+ reps = ready to add weight
+  if(setsAbove8===n&&n>0){
+    return {t:'up',
+      msg:'All '+n+' sets hit 8+ reps \u2014 progressive overload earned.'
+        +' Add '+inc+' lbs next session.',
+      target:nextW,
+      note:'Start at 6 reps with '+nextW+' lbs and work back up to 8.'};
+  }
+
+  // 3. Stalled at same weight for 3+ sessions
+  if(stalled){
+    return {t:'warn',
+      msg:'Stalled for 3 sessions at '+lastW+' lbs. Options:'
+        +' (a) Check form \u2014 a technique tweak often unlocks reps.'
+        +' (b) Add a 4th set to accumulate more volume.'
+        +' (c) Take a deload week (50% weight, same reps) then retry.',
+      target:lastW};
+  }
+
+  // 4. In range (6-7 reps) — maintain, push for 8
+  var needed=n-setsAbove8;
+  return {t:'hold',
+    msg:'Avg '+avgReps.toFixed(1)+' reps at '+lastW+' lbs. '
+      +needed+' set'+(needed!==1?'s':'')+' still to reach 8 reps.'
+      +' Keep '+lastW+' lbs and push for 8 on every set.',
+    target:lastW};
 }
 
 function progHtml(routineId,exId){
   var p=calcProg(routineId,exId);
-  if(p.t==='none') return '<div class="prog"><div class="ptitle">Next Session</div><span class="pno">No previous data yet \u2014 log a set to get recommendations.</span></div>';
-  if(p.t==='up') return '<div class="prog"><div class="ptitle">Next Session</div><span class="pup">\u2191 '+p.msg+'</span></div>';
-  return '<div class="prog"><div class="ptitle">Next Session</div><span class="phold">\u2192 '+p.msg+'</span></div>';
+  var inc=isLowerBody(exId)?db.cfg.inc2:db.cfg.inc;
+  var colors={none:'pno',up:'pup',hold:'phold',down:'pdown',warn:'pwarn'};
+  var icons={none:'',up:'\u2191 ',hold:'\u2192 ',down:'\u2193 ',warn:'\u26a0 '};
+  if(p.t==='none'){
+    return '<div class="prog"><div class="ptitle">Next Session \u2022 Target 3\u00d76\u20138 reps</div>'
+      +'<span class="pno">No previous data yet \u2014 start with a weight you can lift 8 times with good form and 1\u20132 reps left in the tank (RIR).</span></div>';
+  }
+  var html='<div class="prog"><div class="ptitle">Next Session \u2022 6\u20138 Rep Hypertrophy</div>'
+    +'<span class="'+colors[p.t]+'">'+icons[p.t]+p.msg+'</span>';
+  if(p.note) html+='<br><span style="color:var(--muted2);font-size:.72rem">'+p.note+'</span>';
+  if(p.target!==undefined){
+    html+='<br><span style="color:var(--muted);font-size:.7rem">Target weight next session: <strong style="color:var(--text)">'+p.target+' lbs</strong></span>';
+  }
+  html+='</div>';
+  return html;
 }
 
 // ── RENDER LOG ─────────────────────────────────────────────────────────────
@@ -659,15 +751,15 @@ function renderProgress(){
 
 // ── SETTINGS ───────────────────────────────────────────────────────────────
 function openSettings(){
-  document.getElementById('s-rule').value=db.cfg.rule;
-  document.getElementById('s-reps').value=db.cfg.reps;
   document.getElementById('s-inc').value=db.cfg.inc;
+  document.getElementById('s-inc2').value=db.cfg.inc2;
+  document.getElementById('s-sets').value=db.cfg.sets;
   document.getElementById('m-settings').classList.add('on');
 }
 function saveSettings(){
-  db.cfg.rule=document.getElementById('s-rule').value;
-  db.cfg.reps=parseInt(document.getElementById('s-reps').value)||12;
   db.cfg.inc=parseFloat(document.getElementById('s-inc').value)||5;
+  db.cfg.inc2=parseFloat(document.getElementById('s-inc2').value)||10;
+  db.cfg.sets=parseInt(document.getElementById('s-sets').value)||3;
   dbSave(); closeOverlay('m-settings'); renderLog();
 }
 
