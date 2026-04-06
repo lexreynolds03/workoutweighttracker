@@ -71,16 +71,28 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 /* EX BLOCK */
 .exb{margin-bottom:16px}
 .exb-name{font-size:.88rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em;color:var(--muted2);margin-bottom:7px;padding-bottom:5px;border-bottom:1px solid var(--border)}
-.sets-tbl{width:100%;border-collapse:collapse;font-size:.83rem;margin-bottom:7px;font-family:var(--fm)}
-.sets-tbl th{text-align:left;color:var(--muted);font-size:.6rem;letter-spacing:.1em;text-transform:uppercase;padding:3px 6px 6px;border-bottom:1px solid var(--border);font-family:var(--f)}
-.sets-tbl td{padding:4px 6px;border-bottom:1px solid #1c1c1c;vertical-align:middle}
-.sets-tbl tr:last-child td{border-bottom:none}
-.sets-tbl input{background:var(--surface);border:1px solid var(--border);color:var(--text);font-family:var(--fm);font-size:.85rem;padding:4px 6px;width:72px;outline:none;transition:border-color .15s;-moz-appearance:textfield}
-.sets-tbl input::-webkit-outer-spin-button,.sets-tbl input::-webkit-inner-spin-button{-webkit-appearance:none}
-.sets-tbl input:focus{border-color:var(--accent)}
-.snum{color:var(--muted);font-size:.7rem;width:22px}
-.vcell{color:var(--muted);font-size:.75rem}
-.del-set{background:none;border:none;color:var(--muted);cursor:pointer;font-size:.9rem;padding:2px 4px;transition:color .15s}
+/* SET ROWS */
+.sets-wrap{display:flex;flex-direction:column;gap:5px;margin-bottom:8px}
+.set-row{display:flex;align-items:center;gap:6px;background:var(--surface);padding:4px 6px;border:1px solid var(--border)}
+.snum{color:var(--muted);font-size:.72rem;width:18px;flex-shrink:0;text-align:center;font-family:var(--fm)}
+.sel-w,.sel-r{
+  background:var(--card2);
+  border:1px solid var(--border2);
+  color:var(--text);
+  font-family:var(--fm);
+  font-size:.9rem;
+  padding:7px 6px;
+  cursor:pointer;
+  outline:none;
+  -webkit-appearance:none;
+  appearance:none;
+  border-radius:0;
+  min-height:42px;
+}
+.sel-w{flex:2}
+.sel-r{flex:1}
+.sel-w:focus,.sel-r:focus{border-color:var(--accent)}
+.del-set{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem;padding:4px 7px;transition:color .15s;flex-shrink:0;min-height:42px}
 .del-set:hover{color:var(--red)}
 .row-btns{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
 
@@ -439,6 +451,29 @@ function renderRoutines(){
   }).join('');
 }
 
+// ── OPTION LISTS ───────────────────────────────────────────────────────────
+// Pre-build weight options once: 0 then 2.5 lb steps up to 500
+var W_OPTS = (function(){
+  var o='<option value="0">-- lbs</option>';
+  for(var w=2.5;w<=500;w+=2.5) o+='<option value="'+w+'">'+w+' lbs</option>';
+  return o;
+})();
+
+// Rep options 1-20
+var R_OPTS = (function(){
+  var o='<option value="0">-- reps</option>';
+  for(var r=1;r<=20;r++) o+='<option value="'+r+'">'+r+'</option>';
+  return o;
+})();
+
+function wOpts(sel){
+  // Fast: just set .value after innerHTML — avoids rebuilding selected attrs
+  return W_OPTS;
+}
+function rOpts(sel){
+  return R_OPTS;
+}
+
 // ── SESSIONS ───────────────────────────────────────────────────────────────
 var openCards = {};
 var selRoutineId = null;
@@ -449,10 +484,21 @@ function sessVol(s){
   return v;
 }
 
+// Get last session data for a given routine+exercise (for pre-fill)
+function lastSessData(routineId,exId){
+  var past=db.sessions.filter(function(s){
+    return s.routineId===routineId && s.sets[exId] && s.sets[exId].length>0;
+  }).sort(function(a,b){ return b.date.localeCompare(a.date); });
+  return past.length ? past[0].sets[exId] : null;
+}
+
 function addSet(sid,eid){
   var s=db.sessions.find(function(x){ return x.id===sid; }); if(!s) return;
   if(!s.sets[eid]) s.sets[eid]=[];
-  s.sets[eid].push({w:0,r:0});
+  // Copy last set's values as default — fast to confirm if same weight
+  var prev=s.sets[eid];
+  var last=prev.length ? prev[prev.length-1] : {w:0,r:0};
+  s.sets[eid].push({w:last.w,r:last.r});
   dbSave(); renderLog();
 }
 
@@ -466,6 +512,7 @@ function updSet(sid,eid,i,field,val){
   var s=db.sessions.find(function(x){ return x.id===sid; }); if(!s||!s.sets[eid]) return;
   s.sets[eid][i][field]=parseFloat(val)||0;
   dbSave();
+  // No full re-render — selects keep their position
 }
 
 function delSession(id){
@@ -628,23 +675,19 @@ function renderLog(){
     var exHtml=(r?r.exercises:[]).map(function(ex,xi){
       var sets=sess.sets[ex.id]||[];
       var rows=sets.map(function(s,i){
-        return '<tr>'
-          +'<td class="snum">'+(i+1)+'</td>'
-          +'<td><input type="number" value="'+(s.w||'')+'" placeholder="0" min="0" step="2.5"'
-          +' oninput="updSet(\''+sess.id+'\',\''+ex.id+'\','+i+',\'w\',this.value)"/></td>'
-          +'<td><input type="number" value="'+(s.r||'')+'" placeholder="0" min="0" step="1"'
-          +' oninput="updSet(\''+sess.id+'\',\''+ex.id+'\','+i+',\'r\',this.value)"/></td>'
-          +'<td class="vcell">'+((s.w||0)*(s.r||0))+' lbs</td>'
-          +'<td><button class="del-set" onclick="delSet(\''+sess.id+'\',\''+ex.id+'\','+i+')">&#215;</button></td>'
-          +'</tr>';
+        var uid='s_'+sess.id+'_'+ex.id+'_'+i;
+        return '<div class="set-row" id="'+uid+'">'
+          +'<span class="snum">'+(i+1)+'</span>'
+          +'<select class="sel-w" id="'+uid+'_w" onchange="updSet(\''+sess.id+'\',\''+ex.id+'\','+i+',\'w\',this.value)">'+W_OPTS+'</select>'
+          +'<select class="sel-r" id="'+uid+'_r" onchange="updSet(\''+sess.id+'\',\''+ex.id+'\','+i+',\'r\',this.value)">'+R_OPTS+'</select>'
+          +'<button class="del-set" onclick="delSet(\''+sess.id+'\',\''+ex.id+'\','+i+')" title="Remove set">&#215;</button>'
+          +'</div>';
       }).join('');
 
       return (xi>0?'<div class="divr"></div>':'')
         +'<div class="exb">'
         +'<div class="exb-name">'+esc(ex.name)+'</div>'
-        +'<table class="sets-tbl"><thead><tr>'
-        +'<th>#</th><th>Weight (lbs)</th><th>Reps</th><th>Volume</th><th></th>'
-        +'</tr></thead><tbody>'+rows+'</tbody></table>'
+        +'<div class="sets-wrap" id="sw_'+sess.id+'_'+ex.id+'">'+rows+'</div>'
         +'<div class="row-btns"><button class="btn-o" onclick="addSet(\''+sess.id+'\',\''+ex.id+'\')">+ Set</button></div>'
         +progHtml(sess.routineId,ex.id)
         +'</div>';
@@ -661,9 +704,23 @@ function renderLog(){
       +'<div class="sess-actions"><button class="btn-o btn-r" onclick="delSession(\''+sess.id+'\')">&#215; Delete Session</button></div>'
       +'</div></div>';
   }).join('');
-}
 
-// ── SESSION PICKER ─────────────────────────────────────────────────────────
+  // Set select values AFTER innerHTML — this is the reliable way to pre-select
+  sessions.forEach(function(sess){
+    var r=findRoutine(sess.routineId);
+    if(!r) return;
+    r.exercises.forEach(function(ex){
+      var sets=sess.sets[ex.id]||[];
+      sets.forEach(function(s,i){
+        var uid='s_'+sess.id+'_'+ex.id+'_'+i;
+        var ws=document.getElementById(uid+'_w');
+        var rs=document.getElementById(uid+'_r');
+        if(ws) ws.value=s.w||0;
+        if(rs) rs.value=s.r||0;
+      });
+    });
+  });
+}
 function openPicker(){
   document.getElementById('m-date').value=todayStr();
   selRoutineId=db.routines.length?db.routines[0].id:null;
@@ -692,14 +749,24 @@ function confirmSession(){
   if(!selRoutineId){ alert('Choose a routine.'); return; }
   var date=document.getElementById('m-date').value||todayStr();
   var r=findRoutine(selRoutineId); if(!r) return;
+  var numSets=db.cfg.sets||3;
   var sets={};
-  r.exercises.forEach(function(e){ sets[e.id]=[]; });
+  r.exercises.forEach(function(e){
+    // Try to pre-fill from last session with this routine
+    var prev=lastSessData(selRoutineId,e.id);
+    var arr=[];
+    for(var i=0;i<numSets;i++){
+      if(prev&&prev[i]){ arr.push({w:prev[i].w,r:prev[i].r}); }
+      else if(prev&&prev.length){ arr.push({w:prev[prev.length-1].w,r:prev[prev.length-1].r}); }
+      else { arr.push({w:0,r:0}); }
+    }
+    sets[e.id]=arr;
+  });
   var sess={id:'s'+Date.now(),date:date,routineId:selRoutineId,sets:sets};
   db.sessions.push(sess);
   openCards[sess.id]=true;
   dbSave();
   closeOverlay('m-picker');
-  // jump to that week
   var d=new Date(date+'T12:00:00'), now=new Date(); now.setHours(0,0,0,0);
   wkOff=Math.round((d-now)/604800000);
   switchTab('log',document.querySelector('.tab[data-tab="log"]'));
