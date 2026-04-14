@@ -119,7 +119,25 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 .new-ex-input::placeholder{color:var(--muted)}
 .new-ex-input:focus{border-color:var(--accent)}
 
-/* SESSION ACTIONS */
+/* REC PANEL */
+.rec-panel{border-radius:0;padding:9px 11px;margin-bottom:9px;font-size:.78rem;line-height:1.6;border-left:3px solid var(--border)}
+.rec-panel.rec-up{border-left-color:var(--green);background:#0a1a0a}
+.rec-panel.rec-hold{border-left-color:var(--border2);background:#181818}
+.rec-panel.rec-down{border-left-color:var(--red);background:#1a0a0a}
+.rec-panel.rec-warn{border-left-color:var(--orange);background:#1a1400}
+.rec-panel.rec-rebuild{border-left-color:var(--blue);background:#0a1218}
+.rec-panel.rec-none{border-left-color:var(--muted);background:#181818}
+.rec-head{font-size:.7rem;font-weight:700;text-transform:uppercase;letter-spacing:.07em;margin-bottom:5px;color:var(--text)}
+.rec-up .rec-head{color:var(--green)}
+.rec-down .rec-head{color:var(--red)}
+.rec-warn .rec-head{color:var(--orange)}
+.rec-rebuild .rec-head{color:var(--blue)}
+.rec-body{color:var(--muted2);font-size:.74rem;line-height:1.6;margin-bottom:5px}
+.rec-target{font-size:.78rem;color:var(--muted);margin-top:4px}
+.rec-target strong{color:var(--accent);font-size:.9rem}
+.rec-last{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-bottom:6px}
+.rec-last-label{font-size:.6rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-right:3px}
+.rec-set-chip{background:var(--surface);border:1px solid var(--border);padding:2px 7px;font-size:.75rem;font-family:var(--fm);white-space:nowrap}
 .sess-actions{display:flex;gap:7px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--border);margin-top:10px}
 
 /* DIVIDER */
@@ -243,17 +261,6 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
     <div class="rout-bar">
       <div style="font-size:1rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em">My Routines</div>
       <button class="btn-y" onclick="openEditor(null)">+ New Routine</button>
-    </div>
-    <div style="margin-bottom:14px">
-      <div class="sec-title">Quick Templates</div>
-      <div class="tmpl-chips">
-        <button class="tc" onclick="useTemplate('push')">Push Day</button>
-        <button class="tc" onclick="useTemplate('pull')">Pull Day</button>
-        <button class="tc" onclick="useTemplate('legs')">Leg Day</button>
-        <button class="tc" onclick="useTemplate('upper')">Upper Body</button>
-        <button class="tc" onclick="useTemplate('lower')">Lower Body</button>
-        <button class="tc" onclick="useTemplate('full')">Full Body</button>
-      </div>
     </div>
     <div class="rgrid" id="routinelist"></div>
   </div>
@@ -452,13 +459,12 @@ function renderRoutines(){
   }).join('');
 }
 
-// ── PROGRESSION (6-8 rep double progression) ──────────────────────────────────
+// ── PROGRESSION ENGINE ────────────────────────────────────────────────────────
 function isLowerBody(exName){
   return /squat|deadlift|leg press|leg curl|leg ext|lunge|hip thrust|glute|calf|rdl/i.test(exName||'');
 }
 
 function getExHistory(routineId, exId){
-  // All sessions for this routine that contain this exercise, newest first
   var hist=[];
   db.sessions.forEach(function(s){
     if(s.routineId!==routineId) return;
@@ -469,51 +475,154 @@ function getExHistory(routineId, exId){
   return hist;
 }
 
+function maxW(sets){ return sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0); }
+function totalR(sets){ return sets.reduce(function(a,s){ return a+(s.r||0); },0); }
+
 function calcProg(routineId, exId, exName){
   var cfg=db.cfg;
   var inc=isLowerBody(exName)? cfg.inc2 : cfg.inc;
   var hist=getExHistory(routineId, exId);
-  if(!hist.length) return {t:'none', inc:inc};
 
-  var sets=hist[0].sets;
-  var maxW=sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
-  var minR=sets.reduce(function(a,s){ return Math.min(a,s.r||99); },99);
-  var setsBelow6=sets.filter(function(s){ return (s.r||0)>0&&(s.r||0)<6; }).length;
-  var setsAt8=sets.filter(function(s){ return (s.r||0)>=8; }).length;
+  // No history at all
+  if(!hist.length) return {t:'none', inc:inc, target:0, lastSets:null};
+
+  var last=hist[0]; // most recent session
+  var sets=last.sets;
   var n=sets.length;
-  var avgR=(sets.reduce(function(a,s){ return a+(s.r||0); },0)/n).toFixed(1);
+  var wLast=maxW(sets);
+  var rList=sets.map(function(s){ return s.r||0; });
+  var setsBelow6=rList.filter(function(r){ return r>0&&r<6; }).length;
+  var setsAt8plus=rList.filter(function(r){ return r>=8; }).length;
+  var setsAt6to7=rList.filter(function(r){ return r>=6&&r<8; }).length;
+  var avgR=n? (totalR(sets)/n).toFixed(1) : 0;
 
-  // Stall: 3 sessions same weight, no rep improvement
+  // Previous session weight (to detect if user dropped weight)
+  var wPrev=hist.length>=2? maxW(hist[1].sets) : null;
+  var droppedWeight=(wPrev!==null && wLast<wPrev);
+  var raisedWeight=(wPrev!==null && wLast>wPrev);
+
+  // Stall: same weight 3+ sessions with no rep increase
   var stalled=false;
   if(hist.length>=3){
-    var w0=hist[0].sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
-    var w1=hist[1].sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
-    var w2=hist[2].sets.reduce(function(a,s){ return Math.max(a,s.w||0); },0);
-    var r0=hist[0].sets.reduce(function(a,s){ return a+(s.r||0); },0);
-    var r1=hist[1].sets.reduce(function(a,s){ return a+(s.r||0); },0);
-    var r2=hist[2].sets.reduce(function(a,s){ return a+(s.r||0); },0);
-    stalled=(w0===w1&&w1===w2)&&(r0<=r1||r0<=r2);
+    var w0=maxW(hist[0].sets), w1=maxW(hist[1].sets), w2=maxW(hist[2].sets);
+    var r0=totalR(hist[0].sets), r1=totalR(hist[1].sets), r2=totalR(hist[2].sets);
+    stalled=(w0===w1&&w1===w2)&&(r0<=r1&&r0<=r2);
   }
 
+  // ── DECISION TREE ────────────────────────────────────────────────────────
+  // 1. Too heavy — any set under 6 reps
   if(setsBelow6>0){
-    var drop=Math.round(maxW*0.90/2.5)*2.5;
-    return {t:'down', msg:'Too heavy (sub-6 reps). Drop to '+drop+' lbs.', target:drop, inc:inc};
+    var drop=Math.round(wLast*0.90/2.5)*2.5;
+    return {
+      t:'down', inc:inc, target:drop, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      headline:'Weight too heavy',
+      detail:'You hit under 6 reps on '+setsBelow6+' set'+(setsBelow6>1?'s':'')+'. '
+        +'Sub-6 reps means the load is too heavy for hypertrophy stimulus and raises injury risk. '
+        +'Drop to '+drop+' lbs next session and work back up within the 6\u20138 range.'
+    };
   }
-  if(setsAt8===n){
-    return {t:'up', msg:'All sets hit 8 \u2192 add '+inc+' lbs', target:maxW+inc, lastW:maxW, inc:inc};
+
+  // 2. User dropped weight last session & hit 8 reps — don't promote, build back
+  if(droppedWeight && setsAt8plus===n){
+    return {
+      t:'rebuild', inc:inc, target:wPrev, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      headline:'Work back up to previous weight',
+      detail:'You hit 8 reps but at '+wLast+' lbs \u2014 down from your previous '+wPrev+' lbs. '
+        +'You dropped weight, so adding more now would skip over work you still need to do. '
+        +'Go back to '+wPrev+' lbs next session and aim for 6\u20138 reps.'
+    };
   }
+
+  // 3. User raised weight last session — check if they handled it
+  if(raisedWeight && setsBelow6===0 && setsAt8plus<n){
+    return {
+      t:'hold', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      headline:'Good \u2014 keep building at new weight',
+      detail:'You moved up to '+wLast+' lbs (from '+wPrev+' lbs) and hit '+setsAt6to7+' set'+(setsAt6to7!==1?'s':'')+' in the 6\u20137 rep range. '
+        +'That\'s the expected response after a weight increase. '
+        +'Stay at '+wLast+' lbs and push every set toward 8 reps before going up again.'
+    };
+  }
+
+  // 4. All sets hit 8+ at maintained or raised weight — ready to progress
+  if(setsAt8plus===n){
+    return {
+      t:'up', inc:inc, target:wLast+inc, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      headline:'Progress \u2014 add '+inc+' lbs',
+      detail:'Every set hit 8+ reps at '+wLast+' lbs. You\'ve earned the next step. '
+        +'Add '+inc+' lbs next session ('+( wLast+inc)+' lbs total). '
+        +'Expect to drop back to around 6 reps \u2014 that\'s normal and exactly right. Build back to 8.'
+    };
+  }
+
+  // 5. Stalled — no progress in 3 sessions
   if(stalled){
-    return {t:'warn', msg:'Stalled 3x. Deload or check form.', target:maxW, lastW:maxW, inc:inc};
+    var deload=Math.round(wLast*0.80/2.5)*2.5;
+    return {
+      t:'warn', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      headline:'Stalled \u2014 3 sessions with no progress',
+      detail:'You\'ve been at '+wLast+' lbs for 3 sessions without gaining reps. '
+        +'Options: (a) Take a deload week at '+deload+' lbs for the same sets/reps to let your body recover, then come back fresh. '
+        +'(b) Video your form \u2014 a technique fix often unlocks reps instantly. '
+        +'(c) Add 1 extra set of volume before trying to increase weight.'
+    };
   }
-  return {t:'hold', msg:'Avg '+avgR+' reps. Push for 8 on all sets.', target:maxW, lastW:maxW, inc:inc};
+
+  // 6. In 6-7 rep range, normal progression in progress
+  var needed=n-setsAt8plus;
+  var setBreakdown=rList.map(function(r,i){ return 'Set '+(i+1)+': '+r+' reps'; }).join(', ');
+  return {
+    t:'hold', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
+    headline:'Keep building \u2014 push for 8 on every set',
+    detail:'Last session at '+wLast+' lbs: '+setBreakdown+'. '
+      +'You need '+needed+' more set'+(needed!==1?'s':'')+' to reach 8 reps before adding weight. '
+      +'Focus on the sets where you fell short. Stay at '+wLast+' lbs.'
+  };
 }
 
-function recBadge(p){
-  if(p.t==='none') return '<span style="color:var(--muted);font-size:.65rem">First time \u2014 pick a weight</span>';
-  var cls={up:'up',hold:'hold',down:'down',warn:'warn'}[p.t]||'hold';
-  var icon={up:'\u2191',hold:'\u2192',down:'\u2193',warn:'\u26a0'}[p.t]||'';
-  var wt=p.target? ('<strong>'+p.target+' lbs</strong>') : '';
-  return '<span class="'+cls+'">'+icon+' '+wt+'</span><br><span style="color:var(--muted);font-size:.62rem">'+p.msg+'</span>';
+// ── PROGRESSION DISPLAY ───────────────────────────────────────────────────────
+function recPanel(p, exName){
+  // Short badge shown in exercise header (compact)
+  var badgeColor={up:'var(--green)',hold:'var(--muted2)',down:'var(--red)',warn:'var(--orange)',rebuild:'var(--blue)',none:'var(--muted)'}[p.t];
+  var badgeIcon={up:'\u2191',hold:'\u2192',down:'\u2193',warn:'\u26a0',rebuild:'\u21ba',none:'\u2014'}[p.t];
+  var badge='<span style="color:'+badgeColor+';font-weight:700">'+badgeIcon+' '
+    +(p.target? p.target+' lbs' : 'pick a weight')+'</span>';
+
+  // Full guidance panel shown below the sets
+  if(p.t==='none'){
+    return {
+      badge: badge,
+      panel: '<div class="rec-panel rec-none">'
+        +'<div class="rec-head">&#127959; First Time</div>'
+        +'<div class="rec-body">Pick a weight you can lift 8 times with good form and still have 1\u20132 reps left in the tank. '
+        +'That\'s your starting point. Log it and we\'ll guide you from there.</div>'
+        +'</div>'
+    };
+  }
+
+  // Last session sets breakdown
+  var lastStr='';
+  if(p.lastSets&&p.lastSets.length){
+    lastStr='<div class="rec-last"><span class="rec-last-label">Last session</span>'
+      +p.lastSets.map(function(s,i){
+        var r=s.r||0;
+        var col=r>=8?'var(--green)':r>=6?'var(--muted2)':r>0?'var(--red)':'var(--muted)';
+        return '<span class="rec-set-chip" style="border-color:'+col+'"><b>'+(s.w||0)+'</b> lbs \u00d7 <b style="color:'+col+'">'+r+'</b></span>';
+      }).join('')
+      +'</div>';
+  }
+
+  var panelCls={up:'rec-up',hold:'rec-hold',down:'rec-down',warn:'rec-warn',rebuild:'rec-rebuild'}[p.t]||'rec-hold';
+
+  return {
+    badge: badge,
+    panel: '<div class="rec-panel '+panelCls+'">'
+      +'<div class="rec-head">'+p.headline+'</div>'
+      +lastStr
+      +'<div class="rec-body">'+p.detail+'</div>'
+      +(p.target? '<div class="rec-target">Next session: <strong>'+p.target+' lbs</strong></div>' : '')
+      +'</div>'
+  };
 }
 
 // ── SESSION MANAGEMENT ────────────────────────────────────────────────────────
@@ -654,6 +763,7 @@ function renderLog(){
     // Exercise blocks
     var exHtml=exList.map(function(ex){
       var p=calcProg(sess.routineId, ex.id, ex.name);
+      var rec=recPanel(p, ex.name);
       var setRows=ex.sets.map(function(s,i){
         var uid2='u_'+sess.id+'_'+ex.id+'_'+i;
         return '<div class="set-row" id="'+uid2+'">'
@@ -667,10 +777,11 @@ function renderLog(){
       return '<div class="exb">'
         +'<div class="exb-head">'
         +'<div class="exb-name">'+esc(ex.name)+'</div>'
-        +'<div class="exb-rec">'+recBadge(p)+'</div>'
+        +'<div class="exb-rec">'+rec.badge+'</div>'
         +'<button class="exb-del" onclick="removeExFromSess(\''+sess.id+'\',\''+ex.id+'\')" title="Remove exercise">&#215;</button>'
         +'</div>'
         +'<div class="exb-body">'
+        +rec.panel
         +'<div class="sets-wrap" id="sw_'+sess.id+'_'+ex.id+'">'+setRows+'</div>'
         +'<div class="set-btns"><button class="btn-o" onclick="addSet(\''+sess.id+'\',\''+ex.id+'\')">+ Set</button></div>'
         +'</div>'
@@ -684,8 +795,9 @@ function renderLog(){
     available.forEach(function(e){
       var p=calcProg(sess.routineId, e.id, e.name);
       var hint='';
-      if(p.t==='up') hint=' \u2191'+p.target+'lbs';
-      else if(p.t==='hold'&&p.lastW) hint=' \u2192'+p.lastW+'lbs';
+      if(p.t==='up') hint=' \u2191 '+p.target+' lbs';
+      else if(p.t==='hold'||p.t==='rebuild') hint=' \u2192 '+p.target+' lbs';
+      else if(p.t==='down') hint=' \u2193 '+p.target+' lbs';
       else if(p.t==='none') hint=' \u2014 new';
       pickerOpts+='<option value="'+e.id+'">'+esc(e.name)+hint+'</option>';
     });
