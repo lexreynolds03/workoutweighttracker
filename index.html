@@ -687,7 +687,7 @@ function addExToSess(sessId, exId){
   var r=findRoutine(sess.routineId); if(!r) return;
   var exDef=r.exercises.find(function(e){ return e.id===exId; }); if(!exDef) return;
   if((sess.exercises||[]).find(function(e){ return e.id===exId; })) return; // already added
-  var hist=getExHistory(sess.routineId, exId);
+  var hist=getExHistory(sess.routineId, exId, exDef.name);
   var numSets=db.cfg.sets||3;
   var lastSets=hist.length? hist[0].sets : null;
   var sets=[];
