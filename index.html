@@ -78,6 +78,8 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 .exb-rec .hold{color:var(--muted2)}
 .exb-rec .down{color:var(--red);font-weight:700}
 .exb-rec .warn{color:var(--orange);font-weight:700}
+.exb-cfg{background:none;border:none;color:var(--muted);cursor:pointer;font-size:.85rem;padding:2px 4px;flex-shrink:0;transition:color .15s}
+.exb-cfg:hover{color:var(--accent)}
 .exb-del{background:none;border:none;color:var(--muted);cursor:pointer;font-size:1.1rem;padding:2px 4px;flex-shrink:0;transition:color .15s}
 .exb-del:hover{color:var(--red)}
 .exb-body{padding:8px 12px 10px}
@@ -300,11 +302,33 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
   </div>
 </div>
 
-<!-- SETTINGS -->
+<!-- EXERCISE RULE MODAL -->
+<div class="overlay" id="m-exrule">
+  <div class="modal">
+    <h2 id="m-exrule-title">Exercise Settings</h2>
+    <input type="hidden" id="m-exrule-name"/>
+    <label>Progression Style</label>
+    <select id="m-exrule-rule" onchange="onExRuleChange(this.value)">
+      <option value="default">Default (6-8 Rep Double Progression)</option>
+      <option value="5x5">5x5 Linear (add weight every session)</option>
+    </select>
+    <div id="m-exrule-inc-row">
+      <label id="m-exrule-inc-label">Weight Increment (lbs)</label>
+      <input type="number" id="m-exrule-inc" min="1" max="50" step="1"/>
+    </div>
+    <div id="m-exrule-sets-row">
+      <label>Target Sets</label>
+      <input type="number" id="m-exrule-sets" min="1" max="10" step="1" value="5"/>
+    </div>
+    <div class="mactions">
+      <button class="btn-o" onclick="closeOverlay('m-exrule')">Cancel</button>
+      <button class="btn-o" style="border-color:var(--accent);color:var(--accent)" onclick="saveExRule()">Save</button>
+    </div>
+  </div>
+</div>
 <div class="overlay" id="m-settings">
   <div class="modal">
-    <h2>Settings</h2>
-    <div style="background:var(--surface);border-left:3px solid var(--accent);padding:8px 11px;font-size:.72rem;color:var(--muted2);line-height:1.6;margin-bottom:14px">
+    <h2>Settings</h2>;border-left:3px solid var(--accent);padding:8px 11px;font-size:.72rem;color:var(--muted2);line-height:1.6;margin-bottom:14px">
       <strong style="color:var(--text)">6-8 Rep Double Progression</strong><br>
       Hit 8 reps on all sets &rarr; add weight next session.
     </div>
@@ -326,8 +350,9 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 var DB_KEY = 'ironlog5';
 var db = {
   cfg: {inc:5, inc2:10, sets:3},
+  // exRules: keyed by lowercase exercise name, e.g. {"bench press":{rule:"5x5",inc:5}}
+  exRules: {},
   routines: [],
-  // sessions.exercises = [{id, name, sets:[{w,r}]}]  (ordered, dynamic)
   sessions: []
 };
 
@@ -503,12 +528,66 @@ function allSetsAt8(sets){
   return valid.length>0 && valid.every(function(s){ return (s.r||0)>=8; });
 }
 
+function getExRule(exName){
+  if(!db.exRules) db.exRules={};
+  return db.exRules[(exName||'').trim().toLowerCase()] || null;
+}
+
 function calcProg(routineId, exId, exName){
   var cfg=db.cfg;
-  var inc=isLowerBody(exName)? cfg.inc2 : cfg.inc;
+  var rule=getExRule(exName);
+  var inc=rule? (rule.inc||5) : (isLowerBody(exName)? cfg.inc2 : cfg.inc);
   var hist=getExHistory(routineId, exId, exName);
 
-  if(!hist.length) return {t:'none', inc:inc, target:0, lastSets:null};
+  if(!hist.length) return {t:'none', inc:inc, target:0, lastSets:null, rule:rule};
+
+  // ── 5x5 LINEAR PROGRESSION ────────────────────────────────────────────────
+  if(rule && rule.rule==='5x5'){
+    var sets5=hist[0].sets;
+    var wLast5=maxW(sets5);
+    var rList5=sets5.map(function(s){ return s.r||0; });
+    var breakdown5=rList5.map(function(r,i){ return 'Set '+(i+1)+': '+r+' reps'; }).join(' \u00b7 ');
+    var allHit5=sets5.filter(function(s){ return (s.r||0)>0; }).every(function(s){ return (s.r||0)>=5; });
+    var anyBelow3=sets5.some(function(s){ return (s.r||0)>0 && (s.r||0)<3; });
+    var prev5=hist.length>=2? hist[1] : null;
+    var wPrev5=prev5? maxW(prev5.sets) : null;
+
+    // Stall: same weight 2 sessions, reps not improving
+    var stalled5=false;
+    if(hist.length>=2){
+      var w5a=maxW(hist[0].sets), w5b=maxW(hist[1].sets);
+      var r5a=totalR(hist[0].sets), r5b=totalR(hist[1].sets);
+      stalled5=(w5a===w5b)&&(r5a<=r5b);
+    }
+
+    if(anyBelow3){
+      var drop5=Math.round(wLast5*0.90/2.5)*2.5;
+      return {t:'down',inc:inc,target:drop5,lastSets:sets5,wLast:wLast5,wPrev:wPrev5,rule:rule,
+        headline:'Too heavy \u2014 drop the weight',
+        detail:breakdown5+'. A set fell below 3 reps \u2014 that\'s too heavy for 5x5. '
+          +'Drop to '+drop5+' lbs and rebuild. 5x5 only works when you can control all 5 sets.'};
+    }
+    if(stalled5){
+      var deload5=Math.round(wLast5*0.90/2.5)*2.5;
+      return {t:'warn',inc:inc,target:deload5,lastSets:sets5,wLast:wLast5,wPrev:wPrev5,rule:rule,
+        headline:'Stalled \u2014 deload 10% and rebuild',
+        detail:breakdown5+' at '+wLast5+' lbs (2nd session without progress). '
+          +'Classic 5x5 protocol: deload 10% to '+deload5+' lbs, hit all 5\u00d75 cleanly, '
+          +'then add '+inc+' lbs every session until you reach this weight again.'};
+    }
+    if(allHit5){
+      return {t:'up',inc:inc,target:wLast5+inc,lastSets:sets5,wLast:wLast5,wPrev:wPrev5,rule:rule,
+        headline:'All 5\u00d75 \u2014 add '+inc+' lbs',
+        detail:breakdown5+' at '+wLast5+' lbs. Every set hit 5 reps \u2014 add '+inc+' lbs next session ('+(wLast5+inc)+' lbs). '
+          +'5x5 linear: you add weight every single session as long as you hit all 5 sets of 5.'};
+    }
+    var needed5=sets5.filter(function(s){ return (s.r||0)>0&&(s.r||0)<5; }).length;
+    return {t:'hold',inc:inc,target:wLast5,lastSets:sets5,wLast:wLast5,wPrev:wPrev5,rule:rule,
+      headline:'Hit 5 on every set to progress',
+      detail:breakdown5+' at '+wLast5+' lbs. '
+        +needed5+' set'+(needed5!==1?'s':'')+' short of 5 reps. '
+        +'Stay at '+wLast5+' lbs. Once all 5 sets hit 5 reps, add '+inc+' lbs next session.'};
+  }
 
   var last  = hist[0];
   var prev  = hist.length>=2 ? hist[1] : null;
@@ -782,7 +861,15 @@ function onExSearch(sessId, query){
   if(!sess){ sr.innerHTML=''; return; }
   var addedNames=(sess.exercises||[]).map(function(e){ return e.name.trim().toLowerCase(); });
 
-  // Collect all unique exercise names across all routines, filter by query
+  // Match helper: query words all appear in name, OR name words all appear in query
+  // This handles "Preacher Curls" matching "Preacher Curl" and vice versa
+  function matches(nl, q){
+    if(nl.indexOf(q)>=0 || q.indexOf(nl)>=0) return true;
+    // word-by-word: every query word must appear in the name
+    var qWords=q.split(/\s+/);
+    return qWords.every(function(w){ return nl.indexOf(w)>=0; });
+  }
+
   var seen={};
   var results=[];
   db.routines.forEach(function(r){
@@ -790,13 +877,13 @@ function onExSearch(sessId, query){
       var nl=e.name.trim().toLowerCase();
       if(seen[nl]) return;
       seen[nl]=true;
-      if(nl.indexOf(query)<0) return; // doesn't match
+      if(!matches(nl, query)) return;
       if(addedNames.indexOf(nl)>=0) return; // already in session
-      // Get last weight for this exercise
       var hist=getExHistory(r.id, e.id, e.name);
       var lastW=hist.length? maxW(hist[0].sets) : 0;
-      var inThisRoutine=findRoutine(sess.routineId) &&
-        findRoutine(sess.routineId).exercises.find(function(x){ return x.name.trim().toLowerCase()===nl; });
+      var currentRoutine=findRoutine(sess.routineId);
+      var inThisRoutine=currentRoutine &&
+        currentRoutine.exercises.find(function(x){ return x.name.trim().toLowerCase()===nl; });
       results.push({id:e.id, name:e.name, routineName:r.name, lastW:lastW, inThisRoutine:!!inThisRoutine});
     });
   });
@@ -812,7 +899,7 @@ function onExSearch(sessId, query){
       ? '<span class="ex-sr-tag ex-sr-tag-routine">this routine</span>'
       : '<span class="ex-sr-tag ex-sr-tag-other">'+esc(ex.routineName)+'</span>';
     var wt=ex.lastW? '<span class="ex-sr-wt">\u2192 '+ex.lastW+' lbs</span>' : '';
-    return '<div class="ex-sr-item" onclick="pickSearchResult(\''+sessId+'\',\''+esc(ex.id)+'\',\''+esc(ex.name)+'\')">'
+    return '<div class="ex-sr-item" onclick="pickSearchResult(\''+sessId+'\',\''+ex.id+'\',\''+esc(ex.name)+'\')">'
       +'<span class="ex-sr-name">'+esc(ex.name)+'</span>'+tag+wt+'</div>';
   }).join('');
 }
@@ -884,6 +971,7 @@ function renderLog(){
         +'<div class="exb-head">'
         +'<div class="exb-name">'+esc(ex.name)+'</div>'
         +'<div class="exb-rec">'+rec.badge+'</div>'
+        +'<button class="exb-cfg" onclick="openExRule(\''+esc(ex.name)+'\')" title="Progression settings">&#9881;</button>'
         +'<button class="exb-del" onclick="removeExFromSess(\''+sess.id+'\',\''+ex.id+'\')" title="Remove exercise">&#215;</button>'
         +'</div>'
         +'<div class="exb-body">'
@@ -1047,7 +1135,49 @@ function renderProgress(){
   el.innerHTML='<div class="sec-title">All Exercises</div><div class="pgrid">'+(cards||'<div class="empty">No data yet \u2014 log some sessions first.</div>')+'</div>';
 }
 
-// ── SETTINGS ──────────────────────────────────────────────────────────────────
+// ── PER-EXERCISE RULE MODAL ────────────────────────────────────────────────────
+function openExRule(exName){
+  if(!db.exRules) db.exRules={};
+  var key=exName.trim().toLowerCase();
+  var existing=db.exRules[key]||{};
+  document.getElementById('m-exrule-title').textContent=exName+' \u2014 Settings';
+  document.getElementById('m-exrule-name').value=exName;
+  var rule=existing.rule||'default';
+  document.getElementById('m-exrule-rule').value=rule;
+  document.getElementById('m-exrule-inc').value=existing.inc||5;
+  document.getElementById('m-exrule-sets').value=existing.sets||5;
+  onExRuleChange(rule);
+  document.getElementById('m-exrule').classList.add('on');
+}
+function onExRuleChange(val){
+  var incRow=document.getElementById('m-exrule-inc-row');
+  var setsRow=document.getElementById('m-exrule-sets-row');
+  var incLabel=document.getElementById('m-exrule-inc-label');
+  if(val==='5x5'){
+    incRow.style.display='block';
+    setsRow.style.display='block';
+    incLabel.textContent='Weight Increment per Session (lbs)';
+  } else {
+    incRow.style.display='none';
+    setsRow.style.display='none';
+  }
+}
+function saveExRule(){
+  if(!db.exRules) db.exRules={};
+  var exName=document.getElementById('m-exrule-name').value;
+  var key=exName.trim().toLowerCase();
+  var rule=document.getElementById('m-exrule-rule').value;
+  if(rule==='default'){
+    delete db.exRules[key];
+  } else {
+    db.exRules[key]={
+      rule:rule,
+      inc:parseFloat(document.getElementById('m-exrule-inc').value)||5,
+      sets:parseInt(document.getElementById('m-exrule-sets').value)||5
+    };
+  }
+  dbSave(); closeOverlay('m-exrule'); renderLog();
+}
 function openSettings(){
   document.getElementById('s-inc').value=db.cfg.inc;
   document.getElementById('s-inc2').value=db.cfg.inc2;
@@ -1075,7 +1205,6 @@ function closeOverlay(id){ document.getElementById(id).classList.remove('on'); }
 document.querySelectorAll('.overlay').forEach(function(el){
   el.addEventListener('click',function(e){ if(e.target===el) el.classList.remove('on'); });
 });
-
 // ── UTIL ──────────────────────────────────────────────────────────────────────
 function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
