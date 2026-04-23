@@ -509,12 +509,15 @@ function getExHistory(routineId, exId, exName){
   var hist=[];
   db.sessions.forEach(function(s){
     var ex=(s.exercises||[]).find(function(e){
-      // Match by name (case-insensitive) first, fall back to id for legacy data
       return e.name.trim().toLowerCase()===name || e.id===exId;
     });
-    if(ex&&ex.sets&&ex.sets.length) hist.push({date:s.date,sets:ex.sets,routineName:(function(){
-      var r=findRoutine(s.routineId); return r?r.name:'';
-    })()});
+    // Only include sessions where at least one set has real data logged
+    if(ex&&ex.sets&&ex.sets.length){
+      var hasRealData=ex.sets.some(function(set){ return (set.w||0)>0 && (set.r||0)>0; });
+      if(hasRealData) hist.push({date:s.date,sets:ex.sets,routineName:(function(){
+        var r=findRoutine(s.routineId); return r?r.name:'';
+      })()});
+    }
   });
   hist.sort(function(a,b){ return b.date.localeCompare(a.date); });
   return hist;
