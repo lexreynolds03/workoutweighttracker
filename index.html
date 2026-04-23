@@ -594,23 +594,39 @@ function calcProg(routineId, exId, exName){
   var sets  = last.sets;
   var n     = sets.length;
   var wLast = maxW(sets);
-  var rList = sets.map(function(s){ return s.r||0; });
 
-  var setsBelow6 = rList.filter(function(r){ return r>0 && r<6; }).length;
-  var setsAt8    = rList.filter(function(r){ return r>=8; }).length;
-  var setsAt6to7 = rList.filter(function(r){ return r>=6 && r<8; }).length;
-  var setBreakdown = rList.map(function(r,i){
-    return 'Set '+(i+1)+': '+(r>0? r+' reps' : 'not logged');
+  // Working weight = the heaviest weight used this session
+  // Lighter sets are treated as warmups/fatigue — we track the top weight
+  var validSets = sets.filter(function(s){ return (s.w||0)>0 && (s.r||0)>0; });
+  var workingW  = wLast;
+
+  // Working sets = only sets performed at the top weight
+  var workingSets = validSets.filter(function(s){ return (s.w||0)===workingW; });
+
+  var rList    = sets.map(function(s){ return s.r||0; });
+  var setsBelow6 = workingSets.filter(function(s){ return (s.r||0)<6; }).length;
+  var setsAt8    = workingSets.filter(function(s){ return (s.r||0)>=8; }).length;
+  var allWorkingAt8 = workingSets.length>0 && workingSets.every(function(s){ return (s.r||0)>=8; });
+
+  var setBreakdown = sets.map(function(s,i){
+    var r=s.r||0; var w=s.w||0;
+    var marker=(w===workingW)?' \u2605':''; // star marks working sets
+    return 'Set '+(i+1)+': '+(w||'?')+'lbs\u00d7'+(r>0?r+'reps':'?')+marker;
   }).join(' \u00b7 ');
 
   var wPrev        = prev ? maxW(prev.sets) : null;
-  var droppedWeight= wPrev!==null && wLast < wPrev;
-  var raisedWeight = wPrev!==null && wLast > wPrev;
+  var droppedWeight= wPrev!==null && workingW < wPrev;
+  var raisedWeight = wPrev!==null && workingW > wPrev;
 
-  // Did the PREVIOUS session also hit all-8s at the same weight?
-  var prevAlsoAllAt8 = prev && maxW(prev.sets)===wLast && allSetsAt8(prev.sets);
+  // prevAlsoAllAt8: previous session's top weight sets all hit 8, same working weight
+  var prevAlsoAllAt8 = prev && (function(){
+    var prevMax=maxW(prev.sets);
+    if(prevMax!==workingW) return false; // different top weight — doesn't count
+    var prevWorkingSets=prev.sets.filter(function(s){ return (s.w||0)===prevMax && (s.r||0)>0; });
+    return prevWorkingSets.length>0 && prevWorkingSets.every(function(s){ return (s.r||0)>=8; });
+  })();
 
-  // Stall: same weight 3+ sessions, total reps not improving
+  // Stall: same top weight 3+ sessions, working set reps not improving
   var stalled=false;
   if(hist.length>=3){
     var w0=maxW(hist[0].sets), w1=maxW(hist[1].sets), w2=maxW(hist[2].sets);
@@ -620,95 +636,85 @@ function calcProg(routineId, exId, exName){
 
   // ── DECISION TREE ────────────────────────────────────────────────────────
 
-  // 1. ANY set under 6 reps → weight too heavy
+  // 1. Working sets under 6 reps → top weight too heavy
   if(setsBelow6>0){
-    var drop=Math.round(wLast*0.90/2.5)*2.5;
+    var drop=Math.round(workingW*0.90/2.5)*2.5;
     return {
-      t:'down', inc:inc, target:drop, lastSets:sets, wLast:wLast, wPrev:wPrev,
-      headline:'Too heavy \u2014 drop the weight',
+      t:'down', inc:inc, target:drop, lastSets:sets, wLast:workingW, wPrev:wPrev,
+      headline:'Top weight too heavy',
+      detail: setBreakdown+' (\u2605 = working sets at '+workingW+' lbs). '
+        +setsBelow6+' working set'+(setsBelow6>1?'s':'')+' fell below 6 reps. '
+        +'Drop your top weight to '+drop+' lbs and work back up in the 6\u20138 range.'
+    };
+  }
+
+  // 2. Dropped top weight AND working sets all hit 8 → rebuild
+  if(droppedWeight && allWorkingAt8){
+    return {
+      t:'rebuild', inc:inc, target:wPrev, lastSets:sets, wLast:workingW, wPrev:wPrev,
+      headline:'Good session \u2014 rebuild top weight',
       detail: setBreakdown+'. '
-        +setsBelow6+' set'+(setsBelow6>1?'s':'')+' fell below 6 reps. '
-        +'Below 6 reps shifts you out of the hypertrophy zone and increases injury risk. '
-        +'Drop to '+drop+' lbs next session \u2014 that\'s a ~10% reduction. '
-        +'Work back up in the 6\u20138 range before pushing heavier again.'
+        +'Working sets hit 8 at '+workingW+' lbs, but that\'s down from your previous top of '+wPrev+' lbs. '
+        +'Go back to '+wPrev+' lbs as your top weight next session and hit 8 there first.'
     };
   }
 
-  // 2. You dropped weight AND hit 8s → rebuild to old weight, don't jump up
-  if(droppedWeight && allSetsAt8(sets)){
+  // 3. Just raised top weight → rep drop expected
+  if(raisedWeight && setsBelow6===0 && !allWorkingAt8){
     return {
-      t:'rebuild', inc:inc, target:wPrev, lastSets:sets, wLast:wLast, wPrev:wPrev,
-      headline:'Good session \u2014 rebuild to previous weight',
-      detail: setBreakdown+' at '+wLast+' lbs. '
-        +'You hit 8 on all sets but this weight ('+wLast+' lbs) is lower than where you were ('+wPrev+' lbs). '
-        +'You can\'t count this as earned progression yet. '
-        +'Next session go back to '+wPrev+' lbs and try to hit 6\u20138 reps. '
-        +'If you nail it there, THEN we talk about going up.'
+      t:'hold', inc:inc, target:workingW, lastSets:sets, wLast:workingW, wPrev:wPrev,
+      headline:'New top weight \u2014 build reps',
+      detail: setBreakdown+' (\u2605 = working sets at '+workingW+' lbs, up from '+wPrev+' lbs). '
+        +'Rep drop after a weight increase is normal. '
+        +'Keep your top weight at '+workingW+' lbs and push working sets toward 8.'
     };
   }
 
-  // 3. You just raised weight → normal drop in reps expected, stay and build
-  if(raisedWeight && setsBelow6===0 && setsAt8<n){
+  // 4. Working sets all at 8, back-to-back → go up
+  if(allWorkingAt8 && prevAlsoAllAt8){
+    var next=workingW+inc;
     return {
-      t:'hold', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
-      headline:'New weight \u2014 stay and build reps',
-      detail: setBreakdown+' at '+wLast+' lbs (up from '+wPrev+' lbs). '
-        +'Dropping reps after a weight increase is completely normal and expected. '
-        +'Your job now is to build every set back up to 8 before thinking about going higher. '
-        +'Stay at '+wLast+' lbs next session.'
-    };
-  }
-
-  // 4. All sets at 8 AND previous session at same weight was also all-8s → progress
-  if(allSetsAt8(sets) && prevAlsoAllAt8){
-    var next=wLast+inc;
-    return {
-      t:'up', inc:inc, target:next, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      t:'up', inc:inc, target:next, lastSets:sets, wLast:workingW, wPrev:wPrev,
       headline:'Ready to go up \u2014 add '+inc+' lbs',
-      detail: setBreakdown+' at '+wLast+' lbs. '
-        +'You\'ve now hit 8 reps on all sets in back-to-back sessions at '+wLast+' lbs. '
-        +'That\'s the confirmation you need. Add '+inc+' lbs next session ('+next+' lbs). '
-        +'Expect to drop back to 6\u20137 reps at the new weight \u2014 that\'s the process. '
-        +'Build back to 8 twice in a row and you\'ll go up again.'
+      detail: setBreakdown+'. '
+        +'Working sets hit 8 at '+workingW+' lbs in back-to-back sessions. '
+        +'Raise top weight to '+next+' lbs next session. '
+        +'Expect reps to drop \u2014 build back to 8 twice in a row and you go up again.'
     };
   }
 
-  // 5. All sets at 8 but only once (last session) → one more session to confirm
-  if(allSetsAt8(sets) && !prevAlsoAllAt8){
+  // 5. Working sets all hit 8 once → do it again to confirm
+  if(allWorkingAt8 && !prevAlsoAllAt8){
     return {
-      t:'confirm', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
-      headline:'Almost there \u2014 do it again to confirm',
-      detail: setBreakdown+' at '+wLast+' lbs. '
-        +'You hit 8 reps on every set \u2014 great session. '
-        +'But one good day isn\'t enough to confirm you\'ve truly mastered this weight. '
-        +'Come back next session at '+wLast+' lbs and hit 8 on every set again. '
-        +'If you do, you\'ve earned '+(wLast+inc)+' lbs.'
+      t:'confirm', inc:inc, target:workingW, lastSets:sets, wLast:workingW, wPrev:wPrev,
+      headline:'Almost there \u2014 do it again',
+      detail: setBreakdown+'. '
+        +'Working sets all hit 8 at '+workingW+' lbs \u2014 great. '
+        +'Come back at the same top weight and hit 8 again. '
+        +'Two in a row earns you '+(workingW+inc)+' lbs.'
     };
   }
 
-  // 6. Stalled: same weight, 3 sessions, no rep gain
+  // 6. Stalled
   if(stalled){
-    var deload=Math.round(wLast*0.80/2.5)*2.5;
+    var deload=Math.round(workingW*0.80/2.5)*2.5;
     return {
-      t:'warn', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
+      t:'warn', inc:inc, target:workingW, lastSets:sets, wLast:workingW, wPrev:wPrev,
       headline:'Stalled \u2014 time to reset',
-      detail: setBreakdown+' at '+wLast+' lbs (3rd session with no improvement). '
-        +'Options in order: '
-        +'(a) Deload \u2014 drop to '+deload+' lbs for one session, same sets/reps, let your body recover, then come back fresh. '
-        +'(b) Check form \u2014 a small technique tweak often unlocks reps immediately. '
-        +'(c) Add volume \u2014 do one extra set at this weight before trying to progress.'
+      detail: setBreakdown+' (3 sessions no improvement at '+workingW+' lbs top weight). '
+        +'(a) Deload to '+deload+' lbs for one session then come back fresh. '
+        +'(b) Check form. (c) Add one extra working set.'
     };
   }
 
-  // 7. Normal build — in 6-7 rep range
-  var needed=n-setsAt8;
+  // 7. Normal — building reps on working sets
+  var needed=workingSets.length - setsAt8;
   return {
-    t:'hold', inc:inc, target:wLast, lastSets:sets, wLast:wLast, wPrev:wPrev,
-    headline:'Keep pushing \u2014 stay at '+wLast+' lbs',
-    detail: setBreakdown+'. '
-      +needed+' set'+(needed!==1?'s':'')+' still short of 8 reps. '
-      +'Stay at '+wLast+' lbs and focus on those sets. '
-      +'Once all sets hit 8 for two sessions in a row, you\'ll go up to '+(wLast+inc)+' lbs.'
+    t:'hold', inc:inc, target:workingW, lastSets:sets, wLast:workingW, wPrev:wPrev,
+    headline:'Keep pushing \u2014 top weight '+workingW+' lbs',
+    detail: setBreakdown+' (\u2605 = working sets). '
+      +needed+' working set'+(needed!==1?'s':'')+' still short of 8 reps. '
+      +'Once all working sets hit 8 twice in a row, raise top weight to '+(workingW+inc)+' lbs.'
   };
 }
 
@@ -774,13 +780,8 @@ function addExToSess(sessId, exId){
   if((sess.exercises||[]).find(function(e){ return e.id===exId; })) return; // already added
   var hist=getExHistory(sess.routineId, exId, exDef.name);
   var numSets=db.cfg.sets||3;
-  var lastSets=hist.length? hist[0].sets : null;
   var sets=[];
-  for(var i=0;i<numSets;i++){
-    if(lastSets&&lastSets[i]) sets.push({w:lastSets[i].w,r:lastSets[i].r});
-    else if(lastSets&&lastSets.length) sets.push({w:lastSets[lastSets.length-1].w,r:lastSets[lastSets.length-1].r});
-    else sets.push({w:0,r:0});
-  }
+  for(var i=0;i<numSets;i++) sets.push({w:0,r:0});
   if(!sess.exercises) sess.exercises=[];
   sess.exercises.push({id:exId, name:exDef.name, sets:sets});
   dbSave(); renderLog();
@@ -813,8 +814,7 @@ function removeExFromSess(sessId, exId){
 function addSet(sessId, exId){
   var sess=db.sessions.find(function(s){ return s.id===sessId; }); if(!sess) return;
   var ex=(sess.exercises||[]).find(function(e){ return e.id===exId; }); if(!ex) return;
-  var last=ex.sets.length? ex.sets[ex.sets.length-1] : {w:0,r:0};
-  ex.sets.push({w:last.w,r:last.r});
+  ex.sets.push({w:0,r:0});
   dbSave(); renderLog();
 }
 
