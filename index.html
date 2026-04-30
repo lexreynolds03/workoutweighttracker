@@ -3,7 +3,11 @@
 <head>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
+<meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate"/>
+<meta http-equiv="Pragma" content="no-cache"/>
+<meta http-equiv="Expires" content="0"/>
 <title>IRON LOG</title>
+<!-- v5.1 -->
 <style>
 :root{
   --bg:#0d0d0d;--surface:#141414;--card:#1a1a1a;--card2:#202020;
@@ -218,6 +222,31 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
 
 .hidden{display:none!important}
 
+/* HISTORY TAB */
+.hist-controls{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.hist-sel{flex:1;min-width:120px;background:var(--card2);border:1px solid var(--border);color:var(--text);font-family:var(--f);font-size:16px;padding:0 10px;height:42px;outline:none;-webkit-appearance:none;appearance:none}
+.hist-sel:focus{border-color:var(--accent)}
+.hist-search{flex:2;min-width:140px;background:var(--card2);border:1px solid var(--border);color:var(--text);font-family:var(--f);font-size:16px;padding:0 10px;height:42px;outline:none}
+.hist-search:focus{border-color:var(--accent)}
+.hist-search::placeholder{color:var(--muted)}
+.hist-charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px;margin-bottom:20px}
+.hist-ex-card{background:var(--card);border:1px solid var(--border);padding:12px 13px}
+.hist-ex-head{display:flex;align-items:baseline;gap:8px;margin-bottom:8px}
+.hist-ex-name{font-size:.92rem;font-weight:700;text-transform:uppercase;letter-spacing:.03em;flex:1}
+.hist-ex-best{font-size:.75rem;font-family:var(--fm);color:var(--muted2);white-space:nowrap}
+.hist-chart{width:100%;height:60px;margin-bottom:8px;display:block}
+.hist-ex-foot{display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.hist-sess{background:var(--card);border:1px solid var(--border);margin-bottom:10px}
+.hist-sess-head{display:flex;align-items:center;justify-content:space-between;padding:10px 13px;border-bottom:1px solid var(--border)}
+.hist-sess-routine{font-size:.95rem;font-weight:700;text-transform:uppercase;letter-spacing:.04em}
+.hist-sess-date{font-size:.65rem;color:var(--muted);margin-top:1px}
+.hist-sess-vol{font-size:.72rem;font-family:var(--fm);color:var(--muted2);white-space:nowrap}
+.hist-sess-body{padding:10px 13px;display:flex;flex-direction:column;gap:8px}
+.hist-ex-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.hist-ex-row-name{font-size:.8rem;font-weight:600;text-transform:uppercase;letter-spacing:.03em;min-width:100px;flex-shrink:0;color:var(--muted2)}
+.hist-ex-row-sets{display:flex;gap:4px;flex-wrap:wrap;flex:1}
+.hist-ex-row-top{font-size:.7rem;font-family:var(--fm);color:var(--accent);white-space:nowrap;margin-left:auto}
+
 @media(max-width:460px){
   .main{padding:12px 10px}
   .rgrid{grid-template-columns:1fr}
@@ -239,6 +268,7 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
   <button class="tab on" data-tab="log" onclick="switchTab('log',this)">Log</button>
   <button class="tab" data-tab="routines" onclick="switchTab('routines',this)">Routines</button>
   <button class="tab" data-tab="progress" onclick="switchTab('progress',this)">Progress</button>
+  <button class="tab" data-tab="history" onclick="switchTab('history',this)">History</button>
 </nav>
 
 <div class="main">
@@ -283,6 +313,11 @@ body{background:var(--bg);color:var(--text);font-family:var(--f);min-height:100v
   <!-- PROGRESS -->
   <div id="t-progress" class="hidden">
     <div id="progcontent"></div>
+  </div>
+
+  <!-- HISTORY -->
+  <div id="t-history" class="hidden">
+    <div id="historycontent"></div>
   </div>
 
 </div>
@@ -594,7 +629,9 @@ function calcProg(routineId, exId, exName){
 
   var last  = hist[0];
   var prev  = hist.length>=2 ? hist[1] : null;
-  var sets  = last.sets;
+  // Only use sets where both weight and reps were actually logged
+  var sets  = last.sets.filter(function(s){ return (s.w||0)>0 && (s.r||0)>0; });
+  if(!sets.length) return {t:'none', inc:inc, target:0, lastSets:null, rule:rule};
   var n     = sets.length;
   var wLast = maxW(sets);
 
@@ -617,23 +654,29 @@ function calcProg(routineId, exId, exName){
     return 'Set '+(i+1)+': '+(w||'?')+'lbs\u00d7'+(r>0?r+'reps':'?')+marker;
   }).join(' \u00b7 ');
 
-  var wPrev        = prev ? maxW(prev.sets) : null;
+  var wPrev        = prev ? maxW(prev.sets.filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; })) : null;
+  if(wPrev===0) wPrev=null;
   var droppedWeight= wPrev!==null && workingW < wPrev;
   var raisedWeight = wPrev!==null && workingW > wPrev;
 
   // prevAlsoAllAt8: previous session's top weight sets all hit 8, same working weight
   var prevAlsoAllAt8 = prev && (function(){
-    var prevMax=maxW(prev.sets);
-    if(prevMax!==workingW) return false; // different top weight — doesn't count
-    var prevWorkingSets=prev.sets.filter(function(s){ return (s.w||0)===prevMax && (s.r||0)>0; });
+    var prevSets=prev.sets.filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; });
+    if(!prevSets.length) return false;
+    var prevMax=maxW(prevSets);
+    if(prevMax!==workingW) return false;
+    var prevWorkingSets=prevSets.filter(function(s){ return (s.w||0)===prevMax; });
     return prevWorkingSets.length>0 && prevWorkingSets.every(function(s){ return (s.r||0)>=8; });
   })();
 
   // Stall: same top weight 3+ sessions, working set reps not improving
   var stalled=false;
   if(hist.length>=3){
-    var w0=maxW(hist[0].sets), w1=maxW(hist[1].sets), w2=maxW(hist[2].sets);
-    var r0=totalR(hist[0].sets), r1=totalR(hist[1].sets), r2=totalR(hist[2].sets);
+    var h0sets=hist[0].sets.filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; });
+    var h1sets=hist[1].sets.filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; });
+    var h2sets=hist[2].sets.filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; });
+    var w0=maxW(h0sets), w1=maxW(h1sets), w2=maxW(h2sets);
+    var r0=totalR(h0sets), r1=totalR(h1sets), r2=totalR(h2sets);
     stalled=(w0===w1 && w1===w2) && (r0<=r1 && r0<=r2);
   }
 
@@ -744,13 +787,16 @@ function recPanel(p, exName){
   // Last session sets breakdown
   var lastStr='';
   if(p.lastSets&&p.lastSets.length){
-    lastStr='<div class="rec-last"><span class="rec-last-label">Last session</span>'
-      +p.lastSets.map(function(s,i){
-        var r=s.r||0;
-        var col=r>=8?'var(--green)':r>=6?'var(--muted2)':r>0?'var(--red)':'var(--muted)';
-        return '<span class="rec-set-chip" style="border-color:'+col+'"><b>'+(s.w||0)+'</b> lbs \u00d7 <b style="color:'+col+'">'+r+'</b></span>';
-      }).join('')
-      +'</div>';
+    var realSets=p.lastSets.filter(function(s){ return (s.w||0)>0 && (s.r||0)>0; });
+    if(realSets.length){
+      lastStr='<div class="rec-last"><span class="rec-last-label">Last session</span>'
+        +realSets.map(function(s,i){
+          var r=s.r||0;
+          var col=r>=8?'var(--green)':r>=6?'var(--muted2)':r>0?'var(--red)':'var(--muted)';
+          return '<span class="rec-set-chip" style="border-color:'+col+'"><b>'+(s.w||0)+'</b> lbs \u00d7 <b style="color:'+col+'">'+r+'</b></span>';
+        }).join('')
+        +'</div>';
+    }
   }
 
   var panelCls={up:'rec-up',hold:'rec-hold',down:'rec-down',warn:'rec-warn',rebuild:'rec-rebuild',confirm:'rec-confirm'}[p.t]||'rec-hold';
@@ -781,10 +827,14 @@ function addExToSess(sessId, exId){
   var r=findRoutine(sess.routineId); if(!r) return;
   var exDef=r.exercises.find(function(e){ return e.id===exId; }); if(!exDef) return;
   if((sess.exercises||[]).find(function(e){ return e.id===exId; })) return; // already added
-  var hist=getExHistory(sess.routineId, exId, exDef.name);
+  // Get recommended weight — pre-scroll the weight picker there, reps stay blank
+  var p=calcProg(sess.routineId, exId, exDef.name);
+  var suggestedW = (p.target && p.target>0) ? p.target : 0;
+  // Round to nearest 2.5 so it matches a dropdown option
+  suggestedW = Math.round(suggestedW/2.5)*2.5;
   var numSets=db.cfg.sets||3;
   var sets=[];
-  for(var i=0;i<numSets;i++) sets.push({w:0,r:0});
+  for(var i=0;i<numSets;i++) sets.push({w:suggestedW, r:0}); // weight pre-set, reps blank
   if(!sess.exercises) sess.exercises=[];
   sess.exercises.push({id:exId, name:exDef.name, sets:sets});
   dbSave(); renderLog();
@@ -817,7 +867,9 @@ function removeExFromSess(sessId, exId){
 function addSet(sessId, exId){
   var sess=db.sessions.find(function(s){ return s.id===sessId; }); if(!sess) return;
   var ex=(sess.exercises||[]).find(function(e){ return e.id===exId; }); if(!ex) return;
-  ex.sets.push({w:0,r:0});
+  // Copy weight from last set so picker starts there, but reps blank
+  var prevW=ex.sets.length? (ex.sets[ex.sets.length-1].w||0) : 0;
+  ex.sets.push({w:prevW, r:0});
   dbSave(); renderLog();
 }
 
@@ -1195,14 +1247,199 @@ function saveSettings(){
 }
 
 // ── TABS & MODALS ─────────────────────────────────────────────────────────────
+// ── HISTORY TAB ───────────────────────────────────────────────────────────────
+function renderHistory(){
+  var el=document.getElementById('historycontent');
+  if(!db.sessions.length){
+    el.innerHTML='<div class="empty"><span class="ico">📖</span>No sessions logged yet.</div>';
+    return;
+  }
+
+  // Controls
+  var allRoutineNames=['All Routines'];
+  db.routines.forEach(function(r){ allRoutineNames.push(r.name); });
+  var filterSel=document.getElementById('hist-filter');
+  var searchInp=document.getElementById('hist-search');
+  var activeFilter=(filterSel&&filterSel.value)||'All Routines';
+  var activeSearch=(searchInp&&searchInp.value||'').trim().toLowerCase();
+
+  // Sort sessions newest first
+  var sessions=db.sessions.slice().sort(function(a,b){ return b.date.localeCompare(a.date); });
+
+  // Filter by routine
+  if(activeFilter!=='All Routines'){
+    sessions=sessions.filter(function(s){
+      var r=findRoutine(s.routineId);
+      return r && r.name===activeFilter;
+    });
+  }
+
+  // Filter by exercise search
+  if(activeSearch){
+    sessions=sessions.filter(function(s){
+      return (s.exercises||[]).some(function(e){
+        return e.name.toLowerCase().indexOf(activeSearch)>=0;
+      });
+    });
+  }
+
+  // Build routine filter options
+  var routineOpts=allRoutineNames.map(function(n){
+    return '<option value="'+esc(n)+'"'+(n===activeFilter?' selected':'')+'>'+esc(n)+'</option>';
+  }).join('');
+
+  var html='<div class="hist-controls">'
+    +'<select class="hist-sel" onchange="renderHistory()" id="hist-filter">'+routineOpts+'</select>'
+    +'<input class="hist-search" id="hist-search" placeholder="Search exercise..." value="'+esc(activeSearch)+'" oninput="renderHistory()"/>'
+    +'</div>';
+
+  if(!sessions.length){
+    html+='<div class="empty"><span class="ico">🔍</span>No sessions match.</div>';
+    el.innerHTML=html;
+    return;
+  }
+
+  // ── Per-exercise weight chart section ──────────────────────────────────────
+  // Collect all unique exercise names visible in filtered sessions
+  var visibleExNames={};
+  sessions.forEach(function(s){
+    (s.exercises||[]).forEach(function(e){
+      if(!activeSearch || e.name.toLowerCase().indexOf(activeSearch)>=0)
+        visibleExNames[e.name.trim().toLowerCase()]=e.name;
+    });
+  });
+
+  var chartHtml='';
+  Object.keys(visibleExNames).slice(0,12).forEach(function(key){ // cap at 12 charts
+    var exName=visibleExNames[key];
+    // Get all data points: {date, maxW, totalVol, sets}
+    var points=[];
+    db.sessions.slice().sort(function(a,b){ return a.date.localeCompare(b.date); }).forEach(function(s){
+      var ex=(s.exercises||[]).find(function(e){ return e.name.trim().toLowerCase()===key; });
+      if(!ex) return;
+      var realSets=(ex.sets||[]).filter(function(x){ return (x.w||0)>0&&(x.r||0)>0; });
+      if(!realSets.length) return;
+      var mw=maxW(realSets);
+      var vol=realSets.reduce(function(a,x){ return a+(x.w||0)*(x.r||0); },0);
+      var dStr=new Date(s.date+'T12:00:00').toLocaleDateString('en-US',{month:'short',day:'numeric'});
+      points.push({date:s.date,label:dStr,maxW:mw,vol:vol,sets:realSets});
+    });
+    if(points.length<1) return;
+
+    var bestW=Math.max.apply(null,points.map(function(p){ return p.maxW; }));
+    var lastW=points[points.length-1].maxW;
+    var isPR=lastW===bestW&&points.length>1;
+
+    // SVG line chart for max weight over time
+    var chartSvg='';
+    if(points.length>=2){
+      var minW=Math.min.apply(null,points.map(function(p){ return p.maxW; }));
+      var maxWVal=bestW;
+      var range=maxWVal-minW||1;
+      var W=280, H=60, pad=4;
+      var pts=points.map(function(p,i){
+        var x=pad+(i/(points.length-1))*(W-pad*2);
+        var y=H-pad-((p.maxW-minW)/range)*(H-pad*2);
+        return {x:x,y:y,p:p};
+      });
+      var path=pts.map(function(p,i){ return (i===0?'M':'L')+p.x.toFixed(1)+','+p.y.toFixed(1); }).join(' ');
+      // Filled area
+      var area=path+' L'+pts[pts.length-1].x.toFixed(1)+','+(H-pad)+' L'+pts[0].x.toFixed(1)+','+(H-pad)+' Z';
+      // Dots
+      var dots=pts.map(function(p){
+        var isLast=(p===pts[pts.length-1]);
+        return '<circle cx="'+p.x.toFixed(1)+'" cy="'+p.y.toFixed(1)+'" r="'+(isLast?3.5:2.5)+'" fill="'+(isLast?'var(--accent)':'var(--muted2)')+'"/>'
+          +'<title>'+p.p.label+': '+p.p.maxW+' lbs</title>';
+      }).join('');
+      chartSvg='<svg class="hist-chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="none">'
+        +'<path d="'+area+'" fill="var(--accent)" opacity=".08"/>'
+        +'<path d="'+path+'" fill="none" stroke="var(--accent)" stroke-width="1.5" opacity=".7"/>'
+        +dots+'</svg>';
+    }
+
+    // Last session set breakdown
+    var lastSets=points[points.length-1].sets;
+    var setChips=lastSets.map(function(s){
+      var r=s.r||0;
+      var col=r>=8?'var(--green)':r>=6?'var(--muted2)':'var(--red)';
+      return '<span class="rec-set-chip" style="border-color:'+col+'"><b>'+(s.w||0)+'</b>\u00d7<b style="color:'+col+'">'+r+'</b></span>';
+    }).join('');
+
+    chartHtml+='<div class="hist-ex-card">'
+      +'<div class="hist-ex-head">'
+      +'<div class="hist-ex-name">'+esc(exName)+(isPR?'<span class="pr-tag">PR</span>':'')+'</div>'
+      +'<div class="hist-ex-best"><span style="color:var(--muted);font-size:.65rem">BEST</span> <strong>'+bestW+'</strong> lbs</div>'
+      +'</div>'
+      +(chartSvg||'')
+      +'<div class="hist-ex-foot">'
+      +'<span style="font-size:.65rem;color:var(--muted);letter-spacing:.08em;text-transform:uppercase;margin-right:6px">Last</span>'
+      +setChips
+      +'<span style="font-size:.65rem;color:var(--muted);margin-left:auto">'+points.length+' session'+(points.length!==1?'s':'')+'</span>'
+      +'</div>'
+      +'</div>';
+  });
+
+  if(chartHtml){
+    html+='<div class="sec-title" style="margin-top:4px">Weight Over Time</div>'
+      +'<div class="hist-charts">'+chartHtml+'</div>';
+  }
+
+  // ── Session log ────────────────────────────────────────────────────────────
+  html+='<div class="sec-title">Session Log <span style="color:var(--muted);font-weight:400;font-size:.75rem">('+sessions.length+' sessions)</span></div>';
+
+  html+=sessions.map(function(sess){
+    var r=findRoutine(sess.routineId);
+    var rname=r?r.name:'Unknown';
+    var dStr=new Date(sess.date+'T12:00:00').toLocaleDateString('en-US',{weekday:'short',month:'short',day:'numeric',year:'numeric'});
+    var exList=(sess.exercises||[]).filter(function(e){
+      if(!activeSearch) return true;
+      return e.name.toLowerCase().indexOf(activeSearch)>=0;
+    });
+    var totalVol=exList.reduce(function(a,e){
+      return a+(e.sets||[]).reduce(function(b,s){ return b+(s.w||0)*(s.r||0); },0);
+    },0);
+
+    var exRows=exList.map(function(ex){
+      var realSets=(ex.sets||[]).filter(function(s){ return (s.w||0)>0&&(s.r||0)>0; });
+      if(!realSets.length) return '';
+      var chips=realSets.map(function(s){
+        var r=s.r||0;
+        var col=r>=8?'var(--green)':r>=6?'var(--muted2)':'var(--red)';
+        return '<span class="rec-set-chip" style="border-color:'+col+'"><b>'+(s.w||0)+'</b>\u00d7<b style="color:'+col+'">'+r+'</b></span>';
+      }).join('');
+      var mw=maxW(realSets);
+      return '<div class="hist-ex-row">'
+        +'<span class="hist-ex-row-name">'+esc(ex.name)+'</span>'
+        +'<div class="hist-ex-row-sets">'+chips+'</div>'
+        +'<span class="hist-ex-row-top">'+mw+' lbs</span>'
+        +'</div>';
+    }).filter(Boolean).join('');
+
+    if(!exRows) return '';
+
+    return '<div class="hist-sess">'
+      +'<div class="hist-sess-head">'
+      +'<div>'
+      +'<div class="hist-sess-routine">'+esc(rname)+'</div>'
+      +'<div class="hist-sess-date">'+dStr+'</div>'
+      +'</div>'
+      +(totalVol>0?'<div class="hist-sess-vol">'+totalVol+' lbs</div>':'')
+      +'</div>'
+      +'<div class="hist-sess-body">'+exRows+'</div>'
+      +'</div>';
+  }).filter(Boolean).join('');
+
+  el.innerHTML=html;
+}
 function switchTab(name,btn){
   document.querySelectorAll('.tab').forEach(function(b){ b.classList.remove('on'); });
   if(btn) btn.classList.add('on');
-  ['log','routines','progress'].forEach(function(t){
+  ['log','routines','progress','history'].forEach(function(t){
     document.getElementById('t-'+t).classList.toggle('hidden',t!==name);
   });
   if(name==='routines') renderRoutines();
   if(name==='progress') renderProgress();
+  if(name==='history') renderHistory();
 }
 function closeOverlay(id){ document.getElementById(id).classList.remove('on'); }
 document.querySelectorAll('.overlay').forEach(function(el){
